@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "hostname": "example-server",
+    "collection_time": "2025-08-04T20:55:00-07:00",
+    "script_version": "1.0.0",
+    "format_version": "1.0"
+  },
+  "system": {
+    "hostnamectl": "Static hostname: example-server\nOperating System: Arch Linux\nKernel: Linux 6.15.9-arch1-1",
+    "uname": "Linux example-server 6.15.9-arch1-1 #1 SMP PREEMPT_DYNAMIC x86_64 GNU/Linux",
+    "uptime": "up 5 days, 12:34, 1 user, load average: 0.15, 0.10, 0.08"
+  }
+}

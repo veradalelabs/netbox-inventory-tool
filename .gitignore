@@ -1,0 +1,12 @@
+Output files
+output/.json
+output/.yaml
+output/.csv
+output/_summary.txt
+Temporary files
+/tmp/netbox_inventory_*
+*.tmp
+*.log
+System files
+.DS_Store
+*~
