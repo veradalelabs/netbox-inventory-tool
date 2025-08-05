@@ -151,7 +151,7 @@ collect_storage_health() {
         done
     fi
     
-    # Basic filesystem health (errors, read-only status)
+# Basic filesystem health (errors, read-only status)
     FILESYSTEM_HEALTH=""
     while read -r device mountpoint fstype; do
         if [ "$fstype" = "btrfs" ] && command_exists btrfs; then
@@ -160,8 +160,11 @@ collect_storage_health() {
         elif [ "$fstype" = "ext4" ] || [ "$fstype" = "ext3" ] || [ "$fstype" = "xfs" ]; then
             readonly_status=$(mount | grep "$device" | grep -o "ro," || echo "rw,")
             FILESYSTEM_HEALTH+="$device,$mountpoint,$fstype,status:${readonly_status%,}\n"
+        else
+            # Handle other filesystem types gracefully
+            FILESYSTEM_HEALTH+="$device,$mountpoint,$fstype,status:unknown\n"
         fi
-    done < <(mount | grep -E "^/dev" | awk '{print $1, $3, $5}')
+    done < <(mount | grep -E "^/dev" | awk '{print $1, $3, $5}' 2>/dev/null || true)
     
     # Unmounted drives summary
     UNMOUNTED_DRIVES=""
