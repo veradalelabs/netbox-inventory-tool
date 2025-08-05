@@ -47,9 +47,19 @@ collect_hardware_info() {
 collect_storage_info() {
     log "=== Storage Information ==="
     
+    # Basic storage info
     DF_OUTPUT=$(df -h 2>/dev/null || echo "N/A")
-    LSBLK_OUTPUT=$(lsblk 2>/dev/null || echo "N/A")
     MOUNT_OUTPUT=$(mount 2>/dev/null || echo "N/A")
+    
+    # Enhanced block device information
+    log "Collecting block device information"
+    LSBLK_BASIC=$(lsblk 2>/dev/null || echo "N/A")
+    LSBLK_DETAILED=$(lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,FSTYPE,UUID,LABEL 2>/dev/null || echo "N/A")
+    LSBLK_FILESYSTEMS=$(lsblk -f 2>/dev/null || echo "N/A")
+    
+    # Block device UUIDs and labels
+    log "Collecting device labels and UUIDs"
+    BLKID_OUTPUT=$(blkid 2>/dev/null || echo "N/A")
     
     # SMART data collection
     SMART_OUTPUT=""
@@ -95,10 +105,15 @@ generate_json() {
   },
   "storage": {
     "filesystems": $(echo "$DF_OUTPUT" | jq -Rs . 2>/dev/null || echo "\"$DF_OUTPUT\""),
-    "block_devices": $(echo "$LSBLK_OUTPUT" | jq -Rs . 2>/dev/null || echo "\"$LSBLK_OUTPUT\""),
     "mounts": $(echo "$MOUNT_OUTPUT" | jq -Rs . 2>/dev/null || echo "\"$MOUNT_OUTPUT\""),
+    "block_devices": {
+      "basic": $(echo "$LSBLK_BASIC" | jq -Rs . 2>/dev/null || echo "\"$LSBLK_BASIC\""),
+      "detailed": $(echo "$LSBLK_DETAILED" | jq -Rs . 2>/dev/null || echo "\"$LSBLK_DETAILED\""),
+      "filesystems": $(echo "$LSBLK_FILESYSTEMS" | jq -Rs . 2>/dev/null || echo "\"$LSBLK_FILESYSTEMS\"")
+    },
+    "device_labels": $(echo "$BLKID_OUTPUT" | jq -Rs . 2>/dev/null || echo "\"$BLKID_OUTPUT\""),
     "smart_data": $(echo -e "$SMART_OUTPUT" | jq -Rs . 2>/dev/null || echo "\"$SMART_OUTPUT\"")
-  },
+  },,
   "network": {
     "interfaces": $(echo "$IP_ADDR_OUTPUT" | jq -Rs . 2>/dev/null || echo "\"$IP_ADDR_OUTPUT\""),
     "routes": $(echo "$IP_ROUTE_OUTPUT" | jq -Rs . 2>/dev/null || echo "\"$IP_ROUTE_OUTPUT\"")
