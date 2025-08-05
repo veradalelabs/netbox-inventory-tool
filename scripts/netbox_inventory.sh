@@ -88,30 +88,33 @@ collect_label_mappings() {
     LABEL_MAPPINGS=""
     MISSING_LABELS=""
     
-    # Check common storage labels
-    for label in 18_0 18_1 18_2 18_3 18_4 18_5 18_6 scratch; do
-        device=$(blkid -L "$label" 2>/dev/null)
-        if [ -n "$device" ]; then
-            LABEL_MAPPINGS+="$label:$device\n"
-            log "Found label $label on device $device"
-        else
-            MISSING_LABELS+="$label\n"
-            log "Label $label not found"
+    # Check for any labeled devices (not just specific ones)
+    if command_exists blkid; then
+        # Get all labeled devices
+        while read -r device label; do
+            if [ -n "$device" ] && [ -n "$label" ]; then
+                LABEL_MAPPINGS+="$label:$device\n"
+                log "Found label $label on device $device"
+            fi
+        done < <(blkid -o export | awk '/^DEVNAME=/ {dev=$0; sub(/DEVNAME=/, "", dev)} /^LABEL=/ {label=$0; sub(/LABEL=/, "", label); if(dev && label) print dev, label}' 2>/dev/null || true)
+        
+        # If no labels found, note that
+        if [ -z "$LABEL_MAPPINGS" ]; then
+            MISSING_LABELS+="No labeled filesystems found\n"
+            log "No filesystem labels detected on this system"
         fi
-    done
+    fi
     
     # Create device to label reverse mapping
     DEVICE_MAPPINGS=""
     for device in /dev/sd* /dev/nvme*; do
         if [ -b "$device" ] && [[ ! "$device" =~ [0-9]$ ]]; then
-            label=$(blkid -s LABEL -o value "$device" 2>/dev/null)
-            uuid=$(blkid -s UUID -o value "$device" 2>/dev/null)
-            fstype=$(blkid -s TYPE -o value "$device" 2>/dev/null)
+            label=$(blkid -s LABEL -o value "$device" 2>/dev/null || echo "unlabeled")
+            uuid=$(blkid -s UUID -o value "$device" 2>/dev/null || echo "no-uuid")
+            fstype=$(blkid -s TYPE -o value "$device" 2>/dev/null || echo "unknown")
             
-            if [ -n "$label" ] || [ -n "$fstype" ]; then
-                DEVICE_MAPPINGS+="$device:${label:-unlabeled}:${fstype:-unknown}:${uuid:-no-uuid}\n"
-                log "Device $device has label '${label:-none}' type '${fstype:-unknown}'"
-            fi
+            DEVICE_MAPPINGS+="$device:${label}:${fstype}:${uuid}\n"
+            log "Device $device has label '${label}' type '${fstype}'"
         fi
     done
     
@@ -119,8 +122,8 @@ collect_label_mappings() {
     MOUNT_STATUS=""
     for device in /dev/sd* /dev/nvme*; do
         if [ -b "$device" ] && [[ ! "$device" =~ [0-9]$ ]]; then
-            if mount | grep -q "^$device "; then
-                mountpoint=$(mount | grep "^$device " | awk '{print $3}')
+            if mount | grep -q "^$device " 2>/dev/null; then
+                mountpoint=$(mount | grep "^$device " | awk '{print $3}' | head -1)
                 MOUNT_STATUS+="$device:mounted:$mountpoint\n"
             else
                 MOUNT_STATUS+="$device:unmounted:-\n"
@@ -149,28 +152,43 @@ collect_storage_health() {
                 SMART_HEALTH+="$device,$model,$serial,$health,$power_hours,$temp,$reallocated\n"
             fi
         done
+    else
+        SMART_HEALTH+="device,model,serial,health_status,power_hours,temperature,reallocated_sectors\n"
+        SMART_HEALTH+="# smartctl not available - install smartmontools for drive health data\n"
     fi
     
-# Basic filesystem health (errors, read-only status)
+    # Basic filesystem health (errors, read-only status) - improved error handling
     FILESYSTEM_HEALTH=""
-    while read -r device mountpoint fstype; do
-        if [ "$fstype" = "btrfs" ] && command_exists btrfs; then
-            errors=$(btrfs device stats "$mountpoint" 2>/dev/null | grep -c -E "(read_io_errs|write_io_errs|flush_io_errs)" || echo "0")
-            FILESYSTEM_HEALTH+="$device,$mountpoint,$fstype,errors:$errors\n"
-        elif [ "$fstype" = "ext4" ] || [ "$fstype" = "ext3" ] || [ "$fstype" = "xfs" ]; then
-            readonly_status=$(mount | grep "$device" | grep -o "ro," || echo "rw,")
-            FILESYSTEM_HEALTH+="$device,$mountpoint,$fstype,status:${readonly_status%,}\n"
-        else
-            # Handle other filesystem types gracefully
-            FILESYSTEM_HEALTH+="$device,$mountpoint,$fstype,status:unknown\n"
-        fi
-    done < <(mount | grep -E "^/dev" | awk '{print $1, $3, $5}' 2>/dev/null || true)
+    if mount | grep -E "^/dev" >/dev/null 2>&1; then
+        while read -r device mountpoint fstype; do
+            # Skip empty lines
+            [ -z "$device" ] && continue
+            
+            if [ "$fstype" = "btrfs" ] && command_exists btrfs; then
+                errors=$(btrfs device stats "$mountpoint" 2>/dev/null | grep -c -E "(read_io_errs|write_io_errs|flush_io_errs)" 2>/dev/null || echo "0")
+                FILESYSTEM_HEALTH+="$device,$mountpoint,$fstype,errors:$errors\n"
+            elif [ "$fstype" = "ext4" ] || [ "$fstype" = "ext3" ] || [ "$fstype" = "ext2" ]; then
+                readonly_status=$(mount | grep "$device" | grep -o "ro," 2>/dev/null || echo "rw,")
+                FILESYSTEM_HEALTH+="$device,$mountpoint,$fstype,status:${readonly_status%,}\n"
+            elif [ "$fstype" = "xfs" ]; then
+                readonly_status=$(mount | grep "$device" | grep -o "ro," 2>/dev/null || echo "rw,")
+                FILESYSTEM_HEALTH+="$device,$mountpoint,$fstype,status:${readonly_status%,}\n"
+            elif [ "$fstype" = "vfat" ] || [ "$fstype" = "ntfs" ]; then
+                readonly_status=$(mount | grep "$device" | grep -o "ro," 2>/dev/null || echo "rw,")
+                FILESYSTEM_HEALTH+="$device,$mountpoint,$fstype,status:${readonly_status%,}\n"
+            else
+                # Handle any other filesystem types
+                FILESYSTEM_HEALTH+="$device,$mountpoint,$fstype,status:detected\n"
+            fi
+        done < <(mount | grep -E "^/dev" | awk '{print $1, $3, $5}' 2>/dev/null || true)
+    fi
     
-    # Unmounted drives summary
+    # Unmounted drives summary - with better error handling
     UNMOUNTED_DRIVES=""
     for device in /dev/sd* /dev/nvme*; do
+        # Check if device exists and is a block device
         if [ -b "$device" ] && [[ ! "$device" =~ [0-9]$ ]]; then
-            if ! mount | grep -q "^$device "; then
+            if ! mount | grep -q "^$device " 2>/dev/null; then
                 fstype=$(blkid -s TYPE -o value "$device" 2>/dev/null || echo "unknown")
                 label=$(blkid -s LABEL -o value "$device" 2>/dev/null || echo "unlabeled")
                 size=$(lsblk -d -o SIZE "$device" 2>/dev/null | tail -1 | xargs || echo "unknown")
