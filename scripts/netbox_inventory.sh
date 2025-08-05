@@ -129,6 +129,55 @@ collect_label_mappings() {
     done
 }
 
+collect_storage_health() {
+    log "=== Essential Storage Health ==="
+    
+    # Basic SMART health status for all drives
+    SMART_HEALTH=""
+    if command_exists smartctl; then
+        SMART_HEALTH+="device,model,serial,health_status,power_hours,temperature,reallocated_sectors\n"
+        
+        for device in /dev/sd* /dev/nvme*; do
+            if [ -b "$device" ] && [[ ! "$device" =~ [0-9]$ ]]; then
+                model=$(smartctl -i "$device" 2>/dev/null | grep "Device Model:" | cut -d: -f2- | xargs | tr ' ' '_' || echo "Unknown")
+                serial=$(smartctl -i "$device" 2>/dev/null | grep "Serial Number:" | cut -d: -f2- | xargs || echo "Unknown")
+                health=$(smartctl -H "$device" 2>/dev/null | grep "overall-health" | cut -d: -f2- | xargs || echo "Unknown")
+                power_hours=$(smartctl -A "$device" 2>/dev/null | grep "Power_On_Hours" | awk '{print $10}' || echo "N/A")
+                temp=$(smartctl -A "$device" 2>/dev/null | grep "Temperature_Celsius" | awk '{print $10}' || echo "N/A")
+                reallocated=$(smartctl -A "$device" 2>/dev/null | grep "Reallocated_Sector_Ct" | awk '{print $10}' || echo "N/A")
+                
+                SMART_HEALTH+="$device,$model,$serial,$health,$power_hours,$temp,$reallocated\n"
+            fi
+        done
+    fi
+    
+    # Basic filesystem health (errors, read-only status)
+    FILESYSTEM_HEALTH=""
+    while read -r device mountpoint fstype; do
+        if [ "$fstype" = "btrfs" ] && command_exists btrfs; then
+            errors=$(btrfs device stats "$mountpoint" 2>/dev/null | grep -c -E "(read_io_errs|write_io_errs|flush_io_errs)" || echo "0")
+            FILESYSTEM_HEALTH+="$device,$mountpoint,$fstype,errors:$errors\n"
+        elif [ "$fstype" = "ext4" ] || [ "$fstype" = "ext3" ] || [ "$fstype" = "xfs" ]; then
+            readonly_status=$(mount | grep "$device" | grep -o "ro," || echo "rw,")
+            FILESYSTEM_HEALTH+="$device,$mountpoint,$fstype,status:${readonly_status%,}\n"
+        fi
+    done < <(mount | grep -E "^/dev" | awk '{print $1, $3, $5}')
+    
+    # Unmounted drives summary
+    UNMOUNTED_DRIVES=""
+    for device in /dev/sd* /dev/nvme*; do
+        if [ -b "$device" ] && [[ ! "$device" =~ [0-9]$ ]]; then
+            if ! mount | grep -q "^$device "; then
+                fstype=$(blkid -s TYPE -o value "$device" 2>/dev/null || echo "unknown")
+                label=$(blkid -s LABEL -o value "$device" 2>/dev/null || echo "unlabeled")
+                size=$(lsblk -d -o SIZE "$device" 2>/dev/null | tail -1 | xargs || echo "unknown")
+                UNMOUNTED_DRIVES+="$device,$fstype,$label,$size\n"
+            fi
+        fi
+    done
+}
+
+
 # JSON generation
 generate_json() {
     log "Generating JSON output"
@@ -171,7 +220,12 @@ generate_json() {
   "network": {
     "interfaces": $(echo "$IP_ADDR_OUTPUT" | jq -Rs . 2>/dev/null || echo "\"$IP_ADDR_OUTPUT\""),
     "routes": $(echo "$IP_ROUTE_OUTPUT" | jq -Rs . 2>/dev/null || echo "\"$IP_ROUTE_OUTPUT\"")
-  }
+  },
+  "health_summary": {
+      "smart_health_csv": $(echo -e "$SMART_HEALTH" | jq -Rs . 2>/dev/null || echo "\"$SMART_HEALTH\""),
+      "filesystem_health_csv": $(echo -e "$FILESYSTEM_HEALTH" | jq -Rs . 2>/dev/null || echo "\"$FILESYSTEM_HEALTH\""),
+      "unmounted_drives_csv": $(echo -e "$UNMOUNTED_DRIVES" | jq -Rs . 2>/dev/null || echo "\"$UNMOUNTED_DRIVES\"")
+    }
 }
 JSON_EOF
 }
@@ -188,6 +242,7 @@ main() {
     collect_storage_info
     collect_network_info
     collect_label_mappings
+    collect_storage_health
     
     # Generate output
     case "$OUTPUT_FORMAT" in
