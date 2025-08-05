@@ -81,6 +81,54 @@ collect_network_info() {
     IP_ROUTE_OUTPUT=$(ip route show 2>/dev/null || echo "N/A")
 }
 
+collect_label_mappings() {
+    log "=== Storage Label Mappings ==="
+    
+    # Create explicit label to device mapping
+    LABEL_MAPPINGS=""
+    MISSING_LABELS=""
+    
+    # Check common storage labels
+    for label in 18_0 18_1 18_2 18_3 18_4 18_5 18_6 scratch; do
+        device=$(blkid -L "$label" 2>/dev/null)
+        if [ -n "$device" ]; then
+            LABEL_MAPPINGS+="$label:$device\n"
+            log "Found label $label on device $device"
+        else
+            MISSING_LABELS+="$label\n"
+            log "Label $label not found"
+        fi
+    done
+    
+    # Create device to label reverse mapping
+    DEVICE_MAPPINGS=""
+    for device in /dev/sd* /dev/nvme*; do
+        if [ -b "$device" ] && [[ ! "$device" =~ [0-9]$ ]]; then
+            label=$(blkid -s LABEL -o value "$device" 2>/dev/null)
+            uuid=$(blkid -s UUID -o value "$device" 2>/dev/null)
+            fstype=$(blkid -s TYPE -o value "$device" 2>/dev/null)
+            
+            if [ -n "$label" ] || [ -n "$fstype" ]; then
+                DEVICE_MAPPINGS+="$device:${label:-unlabeled}:${fstype:-unknown}:${uuid:-no-uuid}\n"
+                log "Device $device has label '${label:-none}' type '${fstype:-unknown}'"
+            fi
+        fi
+    done
+    
+    # Create mount status mapping
+    MOUNT_STATUS=""
+    for device in /dev/sd* /dev/nvme*; do
+        if [ -b "$device" ] && [[ ! "$device" =~ [0-9]$ ]]; then
+            if mount | grep -q "^$device "; then
+                mountpoint=$(mount | grep "^$device " | awk '{print $3}')
+                MOUNT_STATUS+="$device:mounted:$mountpoint\n"
+            else
+                MOUNT_STATUS+="$device:unmounted:-\n"
+            fi
+        fi
+    done
+}
+
 # JSON generation
 generate_json() {
     log "Generating JSON output"
@@ -112,8 +160,14 @@ generate_json() {
       "filesystems": $(echo "$LSBLK_FILESYSTEMS" | jq -Rs . 2>/dev/null || echo "\"$LSBLK_FILESYSTEMS\"")
     },
     "device_labels": $(echo "$BLKID_OUTPUT" | jq -Rs . 2>/dev/null || echo "\"$BLKID_OUTPUT\""),
+    "mappings": {
+      "label_to_device": $(echo -e "$LABEL_MAPPINGS" | jq -Rs . 2>/dev/null || echo "\"$LABEL_MAPPINGS\""),
+      "device_to_label": $(echo -e "$DEVICE_MAPPINGS" | jq -Rs . 2>/dev/null || echo "\"$DEVICE_MAPPINGS\""),
+      "mount_status": $(echo -e "$MOUNT_STATUS" | jq -Rs . 2>/dev/null || echo "\"$MOUNT_STATUS\""),
+      "missing_labels": $(echo -e "$MISSING_LABELS" | jq -Rs . 2>/dev/null || echo "\"$MISSING_LABELS\"")
+    },
     "smart_data": $(echo -e "$SMART_OUTPUT" | jq -Rs . 2>/dev/null || echo "\"$SMART_OUTPUT\"")
-  },,
+  },
   "network": {
     "interfaces": $(echo "$IP_ADDR_OUTPUT" | jq -Rs . 2>/dev/null || echo "\"$IP_ADDR_OUTPUT\""),
     "routes": $(echo "$IP_ROUTE_OUTPUT" | jq -Rs . 2>/dev/null || echo "\"$IP_ROUTE_OUTPUT\"")
@@ -133,6 +187,7 @@ main() {
     collect_hardware_info
     collect_storage_info
     collect_network_info
+    collect_label_mappings
     
     # Generate output
     case "$OUTPUT_FORMAT" in
